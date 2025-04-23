@@ -1,7 +1,9 @@
 // server.js
 require('dotenv').config();
 const express = require('express');
-const { Pool } = require('pg'); // Change to PostgreSQL
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
+const path = require('path');
 const cors = require('cors');
 
 const app = express();
@@ -11,35 +13,29 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// PostgreSQL Connection Pool
-const dbPool = new Pool({
-  connectionString: process.env.DATABASE_URL, // Use connection string format
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
-
-// Initialize database (create table if it doesn't exist)
+// SQLite database connection
+let db;
 async function initializeDatabase() {
-  const client = await dbPool.connect();
-  try {
-    // Create schools table if not exists (PostgreSQL syntax)
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS schools (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        address VARCHAR(255) NOT NULL,
-        latitude FLOAT NOT NULL,
-        longitude FLOAT NOT NULL
-      )
-    `);
-    console.log('Database initialized');
-  } catch (error) {
-    console.error('Error initializing database:', error);
-  } finally {
-    client.release();
-  }
+  // Open database connection
+  db = await open({
+    filename: path.join(__dirname, 'schools.db'),
+    driver: sqlite3.Database
+  });
+  
+  // Create schools table if it doesn't exist
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS schools (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      address TEXT NOT NULL,
+      latitude REAL NOT NULL,
+      longitude REAL NOT NULL
+    )
+  `);
+  console.log('Database initialized');
 }
 
-// Distance calculation (unchanged)
+// Distance calculation function
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -61,7 +57,7 @@ app.get('/', (req, res) => {
 app.post('/addSchool', async (req, res) => {
   const { name, address, latitude, longitude } = req.body;
 
-  // Input Validation (unchanged)
+  // Input Validation
   if (!name || typeof name !== 'string' || name.trim() === '') {
     return res.status(400).json({ error: 'Invalid or missing school name.' });
   }
@@ -77,18 +73,18 @@ app.post('/addSchool', async (req, res) => {
     return res.status(400).json({ error: 'Invalid longitude (must be between -180 and 180).' });
   }
 
-  const client = await dbPool.connect();
   try {
-    // PostgreSQL uses $1, $2, etc. for parameterized queries
-    const sql = 'INSERT INTO schools (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id';
-    const result = await client.query(sql, [name.trim(), address.trim(), lat, lon]);
+    const result = await db.run(
+      'INSERT INTO schools (name, address, latitude, longitude) VALUES (?, ?, ?, ?)',
+      [name.trim(), address.trim(), lat, lon]
+    );
 
-    console.log('School added with ID:', result.rows[0].id);
+    console.log('School added with ID:', result.lastID);
 
     res.status(201).json({
       message: 'School added successfully!',
       school: {
-        id: result.rows[0].id,
+        id: result.lastID,
         name: name.trim(),
         address: address.trim(),
         latitude: lat,
@@ -98,8 +94,6 @@ app.post('/addSchool', async (req, res) => {
   } catch (error) {
     console.error('Error adding school:', error);
     res.status(500).json({ error: 'Failed to add school to database.', details: error.message });
-  } finally {
-    client.release();
   }
 });
 
@@ -107,7 +101,7 @@ app.post('/addSchool', async (req, res) => {
 app.get('/listSchools', async (req, res) => {
   const { userLat, userLon } = req.query;
 
-  // Input Validation (unchanged)
+  // Input Validation
   const lat = parseFloat(userLat);
   const lon = parseFloat(userLon);
 
@@ -118,16 +112,14 @@ app.get('/listSchools', async (req, res) => {
     return res.status(400).json({ error: 'Invalid userLon (must be between -180 and 180).' });
   }
 
-  const client = await dbPool.connect();
   try {
-    const sql = 'SELECT id, name, address, latitude, longitude FROM schools';
-    const result = await client.query(sql);
+    const schools = await db.all('SELECT id, name, address, latitude, longitude FROM schools');
 
-    if (result.rows.length === 0) {
+    if (schools.length === 0) {
       return res.status(200).json([]);
     }
 
-    const schoolsWithDistance = result.rows.map(school => {
+    const schoolsWithDistance = schools.map(school => {
       const distance = calculateDistance(lat, lon, school.latitude, school.longitude);
       return { ...school, distance };
     });
@@ -137,12 +129,10 @@ app.get('/listSchools', async (req, res) => {
   } catch (error) {
     console.error('Error fetching schools:', error);
     res.status(500).json({ error: 'Failed to retrieve schools.', details: error.message });
-  } finally {
-    client.release();
   }
 });
 
-// Error handler (unchanged)
+// Error handler
 app.use((err, req, res, next) => {
   console.error("Unhandled Error:", err.stack);
   res.status(500).json({ error: 'Something went wrong on the server!' });

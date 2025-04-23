@@ -13,7 +13,6 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// SQLite database connection
 let db;
 async function initializeDatabase() {
   // Open database connection
@@ -22,7 +21,7 @@ async function initializeDatabase() {
     driver: sqlite3.Database
   });
   
-  // Create schools table if it doesn't exist
+
   await db.exec(`
     CREATE TABLE IF NOT EXISTS schools (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +34,7 @@ async function initializeDatabase() {
   console.log('Database initialized');
 }
 
-// Distance calculation function
+
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -48,12 +47,11 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
-// API Routes
 app.get('/', (req, res) => {
   res.status(200).json({ message: 'School Management API is running!' });
 });
 
-// Add School API
+
 app.post('/addSchool', async (req, res) => {
   const { name, address, latitude, longitude } = req.body;
 
@@ -97,11 +95,10 @@ app.post('/addSchool', async (req, res) => {
   }
 });
 
-// List Schools API
 app.get('/listSchools', async (req, res) => {
   const { userLat, userLon } = req.query;
 
-  // Input Validation
+
   const lat = parseFloat(userLat);
   const lon = parseFloat(userLon);
 
@@ -132,13 +129,12 @@ app.get('/listSchools', async (req, res) => {
   }
 });
 
-// Error handler
+
 app.use((err, req, res, next) => {
   console.error("Unhandled Error:", err.stack);
   res.status(500).json({ error: 'Something went wrong on the server!' });
 });
 
-// Initialize database and start server
 initializeDatabase().then(() => {
   app.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on port ${port}`);

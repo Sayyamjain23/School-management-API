@@ -1,166 +1,156 @@
 // server.js
-require('dotenv').config(); // Load environment variables from .env file
+require('dotenv').config();
 const express = require('express');
-const mysql = require('mysql2/promise'); // Use promise-based version
-const cors = require('cors'); // Import cors
+const { Pool } = require('pg'); // Change to PostgreSQL
+const cors = require('cors');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// --- Middleware ---
-app.use(cors()); // Enable CORS for all origins (adjust for production)
-app.use(express.json()); // Middleware to parse JSON request bodies
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-// --- Database Connection Pool ---
-// Using a pool is more efficient than creating connections for each request
-const dbPool = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    waitForConnections: true,
-    connectionLimit: 10, // Adjust as needed
-    queueLimit: 0
+// PostgreSQL Connection Pool
+const dbPool = new Pool({
+  connectionString: process.env.DATABASE_URL, // Use connection string format
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// --- Helper Function: Haversine Formula for Distance Calculation ---
-function calculateDistance(lat1, lon1, lat2, lon2) {
-    const R = 6371; // Radius of the Earth in kilometers
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    const distance = R * c; // Distance in kilometers
-    return distance;
+// Initialize database (create table if it doesn't exist)
+async function initializeDatabase() {
+  const client = await dbPool.connect();
+  try {
+    // Create schools table if not exists (PostgreSQL syntax)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS schools (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        address VARCHAR(255) NOT NULL,
+        latitude FLOAT NOT NULL,
+        longitude FLOAT NOT NULL
+      )
+    `);
+    console.log('Database initialized');
+  } catch (error) {
+    console.error('Error initializing database:', error);
+  } finally {
+    client.release();
+  }
 }
 
-// --- API Routes ---
+// Distance calculation (unchanged)
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
 
-// Health Check Route
+// API Routes
 app.get('/', (req, res) => {
-    res.status(200).json({ message: 'School Management API is running!' });
+  res.status(200).json({ message: 'School Management API is running!' });
 });
 
-
-// 1. Add School API
+// Add School API
 app.post('/addSchool', async (req, res) => {
-    const { name, address, latitude, longitude } = req.body;
+  const { name, address, latitude, longitude } = req.body;
 
-    // --- Input Validation ---
-    if (!name || typeof name !== 'string' || name.trim() === '') {
-        return res.status(400).json({ error: 'Invalid or missing school name.' });
-    }
-    if (!address || typeof address !== 'string' || address.trim() === '') {
-        return res.status(400).json({ error: 'Invalid or missing school address.' });
-    }
-    const lat = parseFloat(latitude);
-    const lon = parseFloat(longitude);
-    if (isNaN(lat) || lat < -90 || lat > 90) {
-        return res.status(400).json({ error: 'Invalid or missing latitude (must be between -90 and 90).' });
-    }
-     if (isNaN(lon) || lon < -180 || lon > 180) {
-        return res.status(400).json({ error: 'Invalid or missing longitude (must be between -180 and 180).' });
-    }
-    // --- End Validation ---
+  // Input Validation (unchanged)
+  if (!name || typeof name !== 'string' || name.trim() === '') {
+    return res.status(400).json({ error: 'Invalid or missing school name.' });
+  }
+  if (!address || typeof address !== 'string' || address.trim() === '') {
+    return res.status(400).json({ error: 'Invalid or missing school address.' });
+  }
+  const lat = parseFloat(latitude);
+  const lon = parseFloat(longitude);
+  if (isNaN(lat) || lat < -90 || lat > 90) {
+    return res.status(400).json({ error: 'Invalid latitude (must be between -90 and 90).' });
+  }
+  if (isNaN(lon) || lon < -180 || lon > 180) {
+    return res.status(400).json({ error: 'Invalid longitude (must be between -180 and 180).' });
+  }
 
-    let connection; // Define connection variable outside try block
+  const client = await dbPool.connect();
+  try {
+    // PostgreSQL uses $1, $2, etc. for parameterized queries
+    const sql = 'INSERT INTO schools (name, address, latitude, longitude) VALUES ($1, $2, $3, $4) RETURNING id';
+    const result = await client.query(sql, [name.trim(), address.trim(), lat, lon]);
 
-    try {
-        connection = await dbPool.getConnection(); // Get connection from pool
-        console.log("Database connected!"); // Log successful connection
+    console.log('School added with ID:', result.rows[0].id);
 
-        const sql = 'INSERT INTO schools (name, address, latitude, longitude) VALUES (?, ?, ?, ?)';
-        const [result] = await connection.execute(sql, [name.trim(), address.trim(), lat, lon]);
-
-        console.log('School added with ID:', result.insertId);
-
-        // Respond with the newly created school's details
-        res.status(201).json({
-            message: 'School added successfully!',
-            school: {
-                id: result.insertId,
-                name: name.trim(),
-                address: address.trim(),
-                latitude: lat,
-                longitude: lon
-            }
-        });
-
-    } catch (error) {
-        console.error('Error adding school:', error);
-        // Check for specific DB errors if needed (e.g., duplicate entry)
-        res.status(500).json({ error: 'Failed to add school to database.', details: error.message });
-    } finally {
-        if (connection) {
-            connection.release(); // Release the connection back to the pool
-            console.log("Database connection released.");
-        }
-    }
+    res.status(201).json({
+      message: 'School added successfully!',
+      school: {
+        id: result.rows[0].id,
+        name: name.trim(),
+        address: address.trim(),
+        latitude: lat,
+        longitude: lon
+      }
+    });
+  } catch (error) {
+    console.error('Error adding school:', error);
+    res.status(500).json({ error: 'Failed to add school to database.', details: error.message });
+  } finally {
+    client.release();
+  }
 });
 
-
-// 2. List Schools API (Sorted by Proximity)
+// List Schools API
 app.get('/listSchools', async (req, res) => {
-    const { userLat, userLon } = req.query; // Get user location from query parameters
+  const { userLat, userLon } = req.query;
 
-    // --- Input Validation ---
-    const lat = parseFloat(userLat);
-    const lon = parseFloat(userLon);
+  // Input Validation (unchanged)
+  const lat = parseFloat(userLat);
+  const lon = parseFloat(userLon);
 
-    if (isNaN(lat) || lat < -90 || lat > 90) {
-        return res.status(400).json({ error: 'Invalid or missing userLat query parameter (must be between -90 and 90).' });
+  if (isNaN(lat) || lat < -90 || lat > 90) {
+    return res.status(400).json({ error: 'Invalid userLat (must be between -90 and 90).' });
+  }
+  if (isNaN(lon) || lon < -180 || lon > 180) {
+    return res.status(400).json({ error: 'Invalid userLon (must be between -180 and 180).' });
+  }
+
+  const client = await dbPool.connect();
+  try {
+    const sql = 'SELECT id, name, address, latitude, longitude FROM schools';
+    const result = await client.query(sql);
+
+    if (result.rows.length === 0) {
+      return res.status(200).json([]);
     }
-     if (isNaN(lon) || lon < -180 || lon > 180) {
-        return res.status(400).json({ error: 'Invalid or missing userLon query parameter (must be between -180 and 180).' });
-    }
-    // --- End Validation ---
 
-    let connection; // Define connection variable outside try block
+    const schoolsWithDistance = result.rows.map(school => {
+      const distance = calculateDistance(lat, lon, school.latitude, school.longitude);
+      return { ...school, distance };
+    });
 
-    try {
-        connection = await dbPool.getConnection();
-        console.log("Database connected!");
-
-        const sql = 'SELECT id, name, address, latitude, longitude FROM schools';
-        const [schools] = await connection.query(sql); // Use query for SELECT without placeholders
-
-        if (schools.length === 0) {
-            return res.status(200).json([]); // Return empty array if no schools found
-        }
-
-        // Calculate distance for each school and add it to the object
-        const schoolsWithDistance = schools.map(school => {
-            const distance = calculateDistance(lat, lon, school.latitude, school.longitude);
-            return { ...school, distance: distance }; // Add distance property (in km)
-        });
-
-        // Sort schools by distance (ascending)
-        schoolsWithDistance.sort((a, b) => a.distance - b.distance);
-
-        res.status(200).json(schoolsWithDistance);
-
-    } catch (error) {
-        console.error('Error fetching schools:', error);
-        res.status(500).json({ error: 'Failed to retrieve schools from database.', details: error.message });
-    } finally {
-        if (connection) {
-            connection.release(); // Release connection
-            console.log("Database connection released.");
-        }
-    }
+    schoolsWithDistance.sort((a, b) => a.distance - b.distance);
+    res.status(200).json(schoolsWithDistance);
+  } catch (error) {
+    console.error('Error fetching schools:', error);
+    res.status(500).json({ error: 'Failed to retrieve schools.', details: error.message });
+  } finally {
+    client.release();
+  }
 });
 
-
-// --- Global Error Handler (Optional but Recommended) ---
+// Error handler (unchanged)
 app.use((err, req, res, next) => {
-    console.error("Unhandled Error:", err.stack);
-    res.status(500).json({ error: 'Something went wrong on the server!' });
+  console.error("Unhandled Error:", err.stack);
+  res.status(500).json({ error: 'Something went wrong on the server!' });
 });
 
-// --- Start Server ---
-app.listen(port, () => {
-    console.log(`Server listening at http://localhost:${port}`);
+// Initialize database and start server
+initializeDatabase().then(() => {
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`Server listening on port ${port}`);
+  });
 });
